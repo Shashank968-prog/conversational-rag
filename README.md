@@ -1,8 +1,8 @@
 # Conversational RAG
 
-A conversational Retrieval-Augmented Generation (RAG) application built using FastAPI, Google Gemini, ChromaDB, and a web frontend.
+A conversational Retrieval-Augmented Generation (RAG) application built using FastAPI, Google Gemini, LangChain, ChromaDB, Hybrid Search, and Reranking.
 
-The application allows users to ask questions about information contained in a PDF document and supports conversational follow-up questions using conversation history and question rewriting.
+The application allows users to ask questions about information contained in PDF documents and supports conversational follow-up questions using conversation history and question rewriting.
 
 ## Features
 
@@ -10,8 +10,12 @@ The application allows users to ask questions about information contained in a P
 - Document chunking
 - Gemini embeddings
 - ChromaDB vector store
-- Similarity-based retrieval
-- Top-k document retrieval
+- MMR (Maximal Marginal Relevance) retrieval
+- Hybrid Search
+- Vector-based semantic retrieval
+- BM25 keyword-based retrieval
+- Ensemble retrieval
+- Cross-Encoder reranking
 - Question rewriting for conversational queries
 - Conversation history
 - Gemini-powered answer generation
@@ -36,60 +40,37 @@ FastAPI
 Question Rewriting
  |
  v
-Retriever
+Hybrid Search
  |
- v
-ChromaDB
- |
- v
-Relevant Document Chunks
- |
- v
-Context
- |
- v
-Google Gemini
- |
- v
-Generated Answer
- |
- v
-Frontend
-
-**Technologies Used**
-Python
-FastAPI
-LangChain
-Google Gemini
-Gemini Embeddings
-ChromaDB
-PyPDFLoader
-HTML
-CSS
-JavaScript
-Uvicorn
-
-**Project Structure**
-
-conversational-rag/
-│
-├── app/
-│   ├── main.py
-│   │
-│   ├── rag/
-│   │   ├── rag_pipeline.py
-│   │   └── test_pipeline.py
-│   │
-│   └── services/
-│
-├── documents/
-│   └── python_rag_notes.pdf
-│
-├── frontend/
-│   ├── index.html
-│   ├── script.js
-│   └── style.css
-│
-├── requirements.txt
-├── .gitignore
-└── README.md
+ +----------------------+
+ |                      |
+ v                      v
+ChromaDB + MMR         BM25
+ |                      |
+ | Semantic Search      | Keyword Search
+ |                      |
+ +----------+-----------+
+            |
+            v
+     Ensemble Retrieval
+            |
+            v
+      Candidate Chunks
+            |
+            v
+        Reranking
+            |
+            v
+     Top Relevant Chunks
+            |
+            v
+          Context
+            |
+            v
+      Google Gemini
+            |
+            v
+     Generated Answer
+            |
+            v
+         Frontend
