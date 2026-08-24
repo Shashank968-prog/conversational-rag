@@ -11,6 +11,15 @@ from langchain_chroma import Chroma
 from langchain.chat_models import init_chat_model
 from langchain_core.prompts import ChatPromptTemplate
 
+# Hybrid Search imports
+from langchain_community.retrievers import BM25Retriever
+from langchain_classic.retrievers import EnsembleRetriever
+
+from sentence_transformers import CrossEncoder
+
+# =========================================================
+# BASE DIRECTORIES
+# =========================================================
 
 BASE_DIR = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "..")
@@ -26,6 +35,7 @@ CHROMA_PATH = os.path.join(
     "chroma_db"
 )
 
+
 # =========================================================
 # Gemini Chat Model
 # =========================================================
@@ -34,6 +44,7 @@ model = init_chat_model(
     "gemini-3.6-flash",
     model_provider="google_genai"
 )
+
 
 # =========================================================
 # 1. Load Documents
@@ -72,7 +83,9 @@ def split_documents(documents):
         chunk_overlap=100
     )
 
-    chunks = text_splitter.split_documents(documents)
+    chunks = text_splitter.split_documents(
+        documents
+    )
 
     return chunks
 
@@ -84,6 +97,62 @@ def split_documents(documents):
 embeddings = GoogleGenerativeAIEmbeddings(
     model="models/gemini-embedding-001"
 )
+
+# =========================================================
+# Reranker Model
+# =========================================================
+
+reranker_model=CrossEncoder(
+    "BAAI/bge-reranker-base"
+)
+
+# =========================================================
+# Rerank Documents
+# =========================================================
+
+
+
+def rerank_documents(
+    question,
+    documents,
+    top_k=3
+):
+
+    if not documents:
+        return []
+
+    # Create question-document pairs
+
+    pairs = [
+        [question, doc.page_content]
+        for doc in documents
+    ]
+
+    # Calculate relevance scores
+
+    scores = reranker_model.predict(
+        pairs
+    )
+
+    # Combine documents with scores
+
+    scored_documents = list(
+        zip(documents, scores)
+    )
+
+    # Sort by relevance score
+
+    scored_documents.sort(
+        key=lambda x: x[1],
+        reverse=True
+    )
+
+    # Return top documents
+
+    return [
+        doc
+        for doc, score in scored_documents[:top_k]
+    ]
 
 
 # =========================================================
@@ -121,12 +190,17 @@ def load_vector_store():
 
 def get_vector_store(chunks):
 
-    if not os.path.exists(CHROMA_PATH) or not os.listdir(CHROMA_PATH):
+    if (
+        not os.path.exists(CHROMA_PATH)
+        or not os.listdir(CHROMA_PATH)
+    ):
 
         print("Chroma database not found.")
         print("Creating Chroma database...")
 
-        vector_store = create_vector_store(chunks)
+        vector_store = create_vector_store(
+            chunks
+        )
 
     else:
 
@@ -137,24 +211,96 @@ def get_vector_store(chunks):
 
     return vector_store
 
+
+# =========================================================
+# 7. MMR Vector Retriever
+# =========================================================
+
 def create_retriever(vector_store):
-    retriever=vector_store.as_retriever(
-        search_kwargs={"k":3}
+
+    retriever = vector_store.as_retriever(
+        search_type="mmr",
+        search_kwargs={
+            "k": 3,
+            "fetch_k": 5,
+            "lambda_mult": 0.5
+        }
     )
+
     return retriever
 
-def format_docs(docs):
-    return "\n\n".join(
-        doc.page_content for doc in docs
+
+# =========================================================
+# 8. Hybrid Retriever
+# =========================================================
+
+def create_hybrid_retriever(
+    vector_store,
+    chunks
+):
+
+    # -----------------------------------------------------
+    # Vector Retriever
+    # -----------------------------------------------------
+
+    vector_retriever = vector_store.as_retriever(
+        search_type="mmr",
+        search_kwargs={
+            "k": 3,
+            "fetch_k": 5,
+            "lambda_mult": 0.5
+        }
     )
 
-from langchain_core.prompts import ChatPromptTemplate
+
+    # -----------------------------------------------------
+    # BM25 Keyword Retriever
+    # -----------------------------------------------------
+
+    bm25_retriever = BM25Retriever.from_documents(
+        chunks
+    )
+
+    bm25_retriever.k = 3
+
+
+    # -----------------------------------------------------
+    # Combine Vector + Keyword Retrievers
+    # -----------------------------------------------------
+
+    hybrid_retriever = EnsembleRetriever(
+        retrievers=[
+            vector_retriever,
+            bm25_retriever
+        ],
+        weights=[
+            0.7,
+            0.3
+        ]
+    )
+
+
+    return hybrid_retriever
+
 
 # =========================================================
-# RAG Prompt
+# 9. Format Documents
 # =========================================================
 
-prompt = ChatPromptTemplate.from_template("""
+def format_docs(docs):
+
+    return "\n\n".join(
+        doc.page_content
+        for doc in docs
+    )
+
+
+# =========================================================
+# 10. RAG Prompt
+# =========================================================
+
+prompt = ChatPromptTemplate.from_template(
+    """
 Answer the question using only the provided context.
 
 If the answer is not available in the context,
@@ -167,25 +313,33 @@ Question:
 {question}
 
 Answer:
-""")
+"""
+)
+
 
 # =========================================================
-# Generate Answer
+# 11. Generate Answer
 # =========================================================
 
-def generate_answer(question, context):
+def generate_answer(
+    question,
+    context
+):
 
     final_prompt = prompt.invoke({
         "context": context,
         "question": question
     })
 
-    response = model.invoke(final_prompt)
+    response = model.invoke(
+        final_prompt
+    )
 
     return response.content[0]["text"]
 
+
 # =========================================================
-# Format Conversation History
+# 12. Format Conversation History
 # =========================================================
 
 def format_history(history):
@@ -196,11 +350,13 @@ def format_history(history):
         for item in history
     )
 
+
 # =========================================================
-# Question Rewriting Prompt
+# 13. Question Rewriting Prompt
 # =========================================================
 
-rewrite_prompt = ChatPromptTemplate.from_template("""
+rewrite_prompt = ChatPromptTemplate.from_template(
+    """
 Given the conversation history and the latest user question,
 rewrite the latest question as a standalone question.
 
@@ -216,16 +372,31 @@ Latest Question:
 {question}
 
 Standalone Question:
-""")
-# =========================================================
-# Rewrite Question
-# =========================================================
-def rewrite_question(question,history):
-    formatted_history=format_history
+"""
+)
 
-    final_prompt=rewrite_prompt.invoke({
-        "history":formatted_history,
-        "question":question
+
+# =========================================================
+# 14. Rewrite Question
+# =========================================================
+
+def rewrite_question(
+    question,
+    history
+):
+
+    # Format the actual conversation history
+    formatted_history = format_history(
+        history
+    )
+
+    final_prompt = rewrite_prompt.invoke({
+        "history": formatted_history,
+        "question": question
     })
-    response=model.invoke(final_prompt)
+
+    response = model.invoke(
+        final_prompt
+    )
+
     return response.content[0]["text"]

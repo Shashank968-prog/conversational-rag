@@ -2,7 +2,8 @@ from rag_pipeline import (
     load_documents,
     split_documents,
     get_vector_store,
-    create_retriever,
+    create_hybrid_retriever,
+    rerank_documents,
     format_docs,
     generate_answer,
     format_history,
@@ -38,12 +39,15 @@ print("\nVector store created/loaded successfully!")
 
 
 # =========================================================
-# 4. Create Retriever
+# 4. Create Hybrid Retriever
 # =========================================================
 
-retriever = create_retriever(vector_store)
+retriever = create_hybrid_retriever(
+    vector_store,
+    chunks
+)
 
-print("Retriever created successfully!")
+print("Hybrid Retriever created successfully!")
 
 
 # =========================================================
@@ -62,9 +66,9 @@ while True:
     question = input("\nYou: ")
 
 
-    # -----------------------------------------------------
+    # =====================================================
     # Exit
-    # -----------------------------------------------------
+    # =====================================================
 
     if question.lower() == "exit":
 
@@ -99,45 +103,78 @@ while True:
 
 
     # =====================================================
-    # 9. Retrieve Relevant Chunks
+    # 9. Hybrid Retrieval
     # =====================================================
 
-    results = retriever.invoke(
+    candidate_results = retriever.invoke(
         standalone_question
     )
 
     print(
-        "\nNumber of retrieved chunks:",
-        len(results)
+        "\nNumber of hybrid candidates:",
+        len(candidate_results)
     )
 
 
     # =====================================================
-    # 10. Display Retrieved Chunks
+    # 10. Display Hybrid Results
     # =====================================================
 
-    for i, doc in enumerate(results):
+    print("\n===== Hybrid Search Results =====")
+
+    for i, doc in enumerate(candidate_results):
 
         print(
-            f"\n===== Retrieved Chunk {i + 1} ====="
+            f"\n----- Hybrid Result {i + 1} -----"
         )
 
         print(doc.page_content)
 
 
     # =====================================================
-    # 11. Format Retrieved Documents
+    # 11. Reranking
+    # =====================================================
+
+    results = rerank_documents(
+        standalone_question,
+        candidate_results,
+        top_k=3
+    )
+
+    print(
+        "\nNumber of reranked chunks:",
+        len(results)
+    )
+
+
+    # =====================================================
+    # 12. Display Final Reranked Chunks
+    # =====================================================
+
+    print("\n===== Final Reranked Results =====")
+
+    for i, doc in enumerate(results):
+
+        print(
+            f"\n===== Reranked Chunk {i + 1} ====="
+        )
+
+        print(doc.page_content)
+
+
+    # =====================================================
+    # 13. Format Retrieved Documents
     # =====================================================
 
     context = format_docs(results)
 
-    print("\n===== Context =====")
+    print("\n===== Final Context =====")
 
     print(context)
 
 
     # =====================================================
-    # 12. Generate Final Answer
+    # 14. Generate Final Answer
     # =====================================================
 
     answer = generate_answer(
@@ -147,7 +184,7 @@ while True:
 
 
     # =====================================================
-    # 13. Display Final Answer
+    # 15. Display Final Answer
     # =====================================================
 
     print("\n===== Final Answer =====")
@@ -156,7 +193,7 @@ while True:
 
 
     # =====================================================
-    # 14. Save Conversation
+    # 16. Save Conversation
     # =====================================================
 
     history.append({
