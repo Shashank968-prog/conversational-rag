@@ -11,11 +11,19 @@ from langchain_chroma import Chroma
 from langchain.chat_models import init_chat_model
 from langchain_core.prompts import ChatPromptTemplate
 
-# Hybrid Search imports
+# =========================================================
+# Hybrid Search Imports
+# =========================================================
+
 from langchain_community.retrievers import BM25Retriever
 from langchain_classic.retrievers import EnsembleRetriever
 
-from sentence_transformers import CrossEncoder
+# =========================================================
+# CrossEncoder
+# =========================================================
+
+from sentence_transformers.cross_encoder import CrossEncoder
+
 
 # =========================================================
 # BASE DIRECTORIES
@@ -97,62 +105,6 @@ def split_documents(documents):
 embeddings = GoogleGenerativeAIEmbeddings(
     model="models/gemini-embedding-001"
 )
-
-# =========================================================
-# Reranker Model
-# =========================================================
-
-reranker_model=CrossEncoder(
-    "BAAI/bge-reranker-base"
-)
-
-# =========================================================
-# Rerank Documents
-# =========================================================
-
-
-
-def rerank_documents(
-    question,
-    documents,
-    top_k=3
-):
-
-    if not documents:
-        return []
-
-    # Create question-document pairs
-
-    pairs = [
-        [question, doc.page_content]
-        for doc in documents
-    ]
-
-    # Calculate relevance scores
-
-    scores = reranker_model.predict(
-        pairs
-    )
-
-    # Combine documents with scores
-
-    scored_documents = list(
-        zip(documents, scores)
-    )
-
-    # Sort by relevance score
-
-    scored_documents.sort(
-        key=lambda x: x[1],
-        reverse=True
-    )
-
-    # Return top documents
-
-    return [
-        doc
-        for doc, score in scored_documents[:top_k]
-    ]
 
 
 # =========================================================
@@ -252,7 +204,6 @@ def create_hybrid_retriever(
         }
     )
 
-
     # -----------------------------------------------------
     # BM25 Keyword Retriever
     # -----------------------------------------------------
@@ -263,9 +214,8 @@ def create_hybrid_retriever(
 
     bm25_retriever.k = 3
 
-
     # -----------------------------------------------------
-    # Combine Vector + Keyword Retrievers
+    # Combine Vector + BM25
     # -----------------------------------------------------
 
     hybrid_retriever = EnsembleRetriever(
@@ -279,12 +229,104 @@ def create_hybrid_retriever(
         ]
     )
 
-
     return hybrid_retriever
 
 
 # =========================================================
-# 9. Format Documents
+# 9. Reranker
+# =========================================================
+
+reranker_model = None
+
+
+def get_reranker():
+
+    global reranker_model
+
+    if reranker_model is None:
+
+        print("Loading CrossEncoder reranker...")
+
+        reranker_model = CrossEncoder(
+            "cross-encoder/ms-marco-MiniLM-L-6-v2"
+        )
+
+        print("CrossEncoder loaded successfully.")
+
+    return reranker_model
+
+
+# =========================================================
+# 10. Rerank Documents
+# =========================================================
+
+def rerank_documents(
+    question,
+    documents,
+    top_k=3
+):
+
+    if not documents:
+        return []
+
+    # -----------------------------------------------------
+    # Load reranker only when required
+    # -----------------------------------------------------
+
+    reranker = get_reranker()
+
+    # -----------------------------------------------------
+    # Create question-document pairs
+    # -----------------------------------------------------
+
+    pairs = [
+        [
+            question,
+            doc.page_content
+        ]
+        for doc in documents
+    ]
+
+    # -----------------------------------------------------
+    # Calculate relevance scores
+    # -----------------------------------------------------
+
+    scores = reranker.predict(
+        pairs
+    )
+
+    # -----------------------------------------------------
+    # Combine documents with scores
+    # -----------------------------------------------------
+
+    scored_documents = list(
+        zip(
+            documents,
+            scores
+        )
+    )
+
+    # -----------------------------------------------------
+    # Sort by relevance
+    # -----------------------------------------------------
+
+    scored_documents.sort(
+        key=lambda x: x[1],
+        reverse=True
+    )
+
+    # -----------------------------------------------------
+    # Return top documents
+    # -----------------------------------------------------
+
+    return [
+        doc
+        for doc, score in scored_documents[:top_k]
+    ]
+
+
+# =========================================================
+# 11. Format Documents
 # =========================================================
 
 def format_docs(docs):
@@ -296,7 +338,7 @@ def format_docs(docs):
 
 
 # =========================================================
-# 10. RAG Prompt
+# 12. RAG Prompt
 # =========================================================
 
 prompt = ChatPromptTemplate.from_template(
@@ -318,7 +360,7 @@ Answer:
 
 
 # =========================================================
-# 11. Generate Answer
+# 13. Generate Answer
 # =========================================================
 
 def generate_answer(
@@ -339,7 +381,7 @@ def generate_answer(
 
 
 # =========================================================
-# 12. Format Conversation History
+# 14. Format Conversation History
 # =========================================================
 
 def format_history(history):
@@ -352,7 +394,7 @@ def format_history(history):
 
 
 # =========================================================
-# 13. Question Rewriting Prompt
+# 15. Question Rewriting Prompt
 # =========================================================
 
 rewrite_prompt = ChatPromptTemplate.from_template(
@@ -377,7 +419,7 @@ Standalone Question:
 
 
 # =========================================================
-# 14. Rewrite Question
+# 16. Rewrite Question
 # =========================================================
 
 def rewrite_question(
@@ -385,7 +427,6 @@ def rewrite_question(
     history
 ):
 
-    # Format the actual conversation history
     formatted_history = format_history(
         history
     )
