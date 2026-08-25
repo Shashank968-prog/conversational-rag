@@ -11,19 +11,6 @@ from langchain_chroma import Chroma
 from langchain.chat_models import init_chat_model
 from langchain_core.prompts import ChatPromptTemplate
 
-# =========================================================
-# Hybrid Search Imports
-# =========================================================
-
-from langchain_community.retrievers import BM25Retriever
-from langchain_classic.retrievers import EnsembleRetriever
-
-# =========================================================
-# CrossEncoder
-# =========================================================
-
-from sentence_transformers.cross_encoder import CrossEncoder
-
 
 # =========================================================
 # BASE DIRECTORIES
@@ -192,6 +179,15 @@ def create_hybrid_retriever(
 ):
 
     # -----------------------------------------------------
+    # Hybrid-search-only imports (kept local so the main
+    # deployed app never has to load these unless this
+    # function is actually called)
+    # -----------------------------------------------------
+
+    from langchain_community.retrievers import BM25Retriever
+    from langchain_classic.retrievers import EnsembleRetriever
+
+    # -----------------------------------------------------
     # Vector Retriever
     # -----------------------------------------------------
 
@@ -246,6 +242,14 @@ def get_reranker():
     if reranker_model is None:
 
         print("Loading CrossEncoder reranker...")
+
+        # ---------------------------------------------
+        # Reranker-only import (kept local so the main
+        # deployed app never loads sentence-transformers
+        # / torch unless this function is actually called)
+        # ---------------------------------------------
+
+        from sentence_transformers.cross_encoder import CrossEncoder
 
         reranker_model = CrossEncoder(
             "cross-encoder/ms-marco-MiniLM-L-6-v2"
