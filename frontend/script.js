@@ -26,7 +26,7 @@ async function sendQuestion() {
     try {
 
         const response = await fetch(
-            "http://127.0.0.1:8000/chat",
+            "/chat",
             {
                 method: "POST",
 
