@@ -1,3 +1,8 @@
+// Generate one session ID per browser tab/session so this
+// user's conversation stays separate from anyone else's.
+const sessionId = crypto.randomUUID();
+
+
 async function sendQuestion() {
 
     const input = document.getElementById("question");
@@ -35,7 +40,8 @@ async function sendQuestion() {
                 },
 
                 body: JSON.stringify({
-                    question: question
+                    question: question,
+                    session_id: sessionId
                 })
             }
         );

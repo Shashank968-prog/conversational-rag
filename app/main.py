@@ -1,12 +1,21 @@
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import (
+    FastAPI,
+    UploadFile,
+    File,
+    HTTPException
+)
+
 from pydantic import BaseModel
+
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
 import os
+
+from langchain_community.document_loaders import PyPDFLoader
 
 from app.rag.rag_pipeline import (
     load_documents,
@@ -25,7 +34,11 @@ from app.rag.rag_pipeline import (
 # =========================================================
 
 retriever = None
-history = []
+vector_store = None
+
+# Conversation history, keyed by session_id so different
+# users/tabs don't share the same conversation.
+history_by_session: dict[str, list] = {}
 
 
 # =========================================================
@@ -43,6 +56,21 @@ FRONTEND_DIR = os.path.join(
     "frontend"
 )
 
+DOCUMENTS_DIR = os.path.join(
+    BASE_DIR,
+    "documents"
+)
+
+
+# =========================================================
+# Create Documents Directory
+# =========================================================
+
+os.makedirs(
+    DOCUMENTS_DIR,
+    exist_ok=True
+)
+
 
 # =========================================================
 # FastAPI Lifespan
@@ -52,6 +80,7 @@ FRONTEND_DIR = os.path.join(
 async def lifespan(app: FastAPI):
 
     global retriever
+    global vector_store
 
     print("========================================")
     print("Starting Conversational RAG")
@@ -76,7 +105,9 @@ async def lifespan(app: FastAPI):
 
     print("Splitting documents...")
 
-    chunks = split_documents(documents)
+    chunks = split_documents(
+        documents
+    )
 
     print(
         "Number of chunks:",
@@ -165,6 +196,7 @@ app.mount(
 class ChatRequest(BaseModel):
 
     question: str
+    session_id: str
 
 
 # =========================================================
@@ -195,15 +227,146 @@ def frontend():
 
 
 # =========================================================
+# PDF Upload Endpoint
+# =========================================================
+
+@app.post("/upload")
+async def upload_pdf(
+    file: UploadFile = File(...)
+):
+
+    global vector_store
+    global retriever
+
+    # =====================================================
+    # STEP 1: Check File Type
+    # =====================================================
+
+    if file.content_type != "application/pdf":
+
+        raise HTTPException(
+            status_code=400,
+            detail="Only PDF files are allowed."
+        )
+
+    # =====================================================
+    # STEP 2: Check Filename
+    # =====================================================
+
+    if not file.filename:
+
+        raise HTTPException(
+            status_code=400,
+            detail="Filename is required."
+        )
+
+    # =====================================================
+    # STEP 3: Create File Path
+    # =====================================================
+
+    file_path = os.path.join(
+        DOCUMENTS_DIR,
+        file.filename
+    )
+
+    # =====================================================
+    # STEP 4: Save Uploaded PDF
+    # =====================================================
+
+    with open(
+        file_path,
+        "wb"
+    ) as buffer:
+
+        buffer.write(
+            await file.read()
+        )
+
+    print(
+        f"PDF uploaded: {file.filename}"
+    )
+
+    # =====================================================
+    # STEP 5: Load Uploaded PDF
+    # =====================================================
+
+    loader = PyPDFLoader(
+        file_path
+    )
+
+    documents = loader.load()
+
+    # =====================================================
+    # STEP 6: Add Metadata
+    # =====================================================
+
+    for document in documents:
+
+        document.metadata["filename"] = (
+            file.filename
+        )
+
+    # =====================================================
+    # STEP 7: Split PDF
+    # =====================================================
+
+    chunks = split_documents(
+        documents
+    )
+
+    print(
+        "Number of new chunks:",
+        len(chunks)
+    )
+
+    # =====================================================
+    # STEP 8: Add Chunks to Existing Chroma
+    # =====================================================
+
+    vector_store.add_documents(
+        chunks
+    )
+
+    print(
+        "New chunks added to ChromaDB."
+    )
+
+    # =====================================================
+    # STEP 9: Recreate Retriever
+    # =====================================================
+
+    retriever = create_retriever(
+        vector_store
+    )
+
+    print(
+        "Retriever updated."
+    )
+
+    # =====================================================
+    # STEP 10: Return Response
+    # =====================================================
+
+    return {
+        "message": "PDF uploaded and indexed successfully.",
+        "filename": file.filename,
+        "pages": len(documents),
+        "chunks": len(chunks)
+    }
+
+
+# =========================================================
 # Chat Endpoint
 # =========================================================
 
 @app.post("/chat")
-def chat(request: ChatRequest):
+def chat(
+    request: ChatRequest
+):
 
-    # -----------------------------------------------------
+    # =====================================================
     # Check Retriever
-    # -----------------------------------------------------
+    # =====================================================
 
     if retriever is None:
 
@@ -211,19 +374,28 @@ def chat(request: ChatRequest):
             "error": "RAG pipeline is not ready yet."
         }
 
-    # -----------------------------------------------------
-    # STEP 1: Get User Question
-    # -----------------------------------------------------
+    # =====================================================
+    # STEP 1: Get This Session's History
+    # =====================================================
+
+    session_history = history_by_session.setdefault(
+        request.session_id,
+        []
+    )
+
+    # =====================================================
+    # STEP 2: Get User Question
+    # =====================================================
 
     question = request.question
 
-    # -----------------------------------------------------
-    # STEP 2: Rewrite Question
-    # -----------------------------------------------------
+    # =====================================================
+    # STEP 3: Rewrite Question
+    # =====================================================
 
     standalone_question = rewrite_question(
         question,
-        history
+        session_history
     )
 
     print("\nOriginal Question:")
@@ -232,9 +404,9 @@ def chat(request: ChatRequest):
     print("\nRewritten Question:")
     print(standalone_question)
 
-    # -----------------------------------------------------
-    # STEP 3: Retrieve Relevant Chunks
-    # -----------------------------------------------------
+    # =====================================================
+    # STEP 4: Retrieve Relevant Chunks
+    # =====================================================
 
     results = retriever.invoke(
         standalone_question
@@ -245,9 +417,9 @@ def chat(request: ChatRequest):
         len(results)
     )
 
-    # -----------------------------------------------------
-    # STEP 4: Display Retrieved Chunks
-    # -----------------------------------------------------
+    # =====================================================
+    # STEP 5: Display Retrieved Chunks
+    # =====================================================
 
     for i, doc in enumerate(results):
 
@@ -255,37 +427,39 @@ def chat(request: ChatRequest):
             f"\n===== Retrieved Chunk {i + 1} ====="
         )
 
-        print(doc.page_content)
+        print(
+            doc.page_content
+        )
 
-    # -----------------------------------------------------
-    # STEP 5: Format Context
-    # -----------------------------------------------------
+    # =====================================================
+    # STEP 6: Format Context
+    # =====================================================
 
     context = format_docs(
         results
     )
 
-    # -----------------------------------------------------
-    # STEP 6: Generate Answer
-    # -----------------------------------------------------
+    # =====================================================
+    # STEP 7: Generate Answer
+    # =====================================================
 
     answer = generate_answer(
         question,
         context
     )
 
-    # -----------------------------------------------------
-    # STEP 7: Save Conversation
-    # -----------------------------------------------------
+    # =====================================================
+    # STEP 8: Save Conversation
+    # =====================================================
 
-    history.append({
+    session_history.append({
         "question": question,
         "answer": answer
     })
 
-    # -----------------------------------------------------
-    # STEP 8: Return Response
-    # -----------------------------------------------------
+    # =====================================================
+    # STEP 9: Return Response
+    # =====================================================
 
     return {
         "question": question,
