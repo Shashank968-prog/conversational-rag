@@ -1,3 +1,5 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
@@ -19,31 +21,15 @@ from app.rag.rag_pipeline import (
 
 
 # =========================================================
-# 1. FastAPI Application
+# Global RAG Variables
 # =========================================================
 
-app = FastAPI(
-    title="Conversational RAG API",
-    description="Conversational RAG using FastAPI, Chroma and Gemini",
-    version="1.0.0"
-)
+retriever = None
+history = []
 
 
 # =========================================================
-# 2. CORS
-# =========================================================
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"]
-)
-
-
-# =========================================================
-# 3. Project Paths
+# Project Paths
 # =========================================================
 
 BASE_DIR = os.path.dirname(
@@ -59,18 +45,121 @@ FRONTEND_DIR = os.path.join(
 
 
 # =========================================================
-# 4. Frontend
+# FastAPI Lifespan
+# =========================================================
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+
+    global retriever
+
+    print("========================================")
+    print("Starting Conversational RAG")
+    print("========================================")
+
+    # -----------------------------------------------------
+    # 1. Load Documents
+    # -----------------------------------------------------
+
+    print("Loading documents...")
+
+    documents = load_documents()
+
+    print(
+        "Number of documents/pages:",
+        len(documents)
+    )
+
+    # -----------------------------------------------------
+    # 2. Split Documents
+    # -----------------------------------------------------
+
+    print("Splitting documents...")
+
+    chunks = split_documents(documents)
+
+    print(
+        "Number of chunks:",
+        len(chunks)
+    )
+
+    # -----------------------------------------------------
+    # 3. Vector Store
+    # -----------------------------------------------------
+
+    print("Loading / creating vector store...")
+
+    vector_store = get_vector_store(
+        chunks
+    )
+
+    print("Vector store ready!")
+
+    # -----------------------------------------------------
+    # 4. Retriever
+    # -----------------------------------------------------
+
+    print("Creating retriever...")
+
+    retriever = create_retriever(
+        vector_store
+    )
+
+    print("Retriever ready!")
+
+    print("========================================")
+    print("RAG pipeline ready!")
+    print("========================================")
+
+    yield
+
+    # -----------------------------------------------------
+    # Shutdown
+    # -----------------------------------------------------
+
+    print("Shutting down RAG application...")
+
+
+# =========================================================
+# FastAPI Application
+# =========================================================
+
+app = FastAPI(
+    title="Conversational RAG API",
+    description="Conversational RAG using FastAPI, Chroma and Gemini",
+    version="1.0.0",
+    lifespan=lifespan
+)
+
+
+# =========================================================
+# CORS
+# =========================================================
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"]
+)
+
+
+# =========================================================
+# Frontend
 # =========================================================
 
 app.mount(
     "/frontend",
-    StaticFiles(directory=FRONTEND_DIR),
+    StaticFiles(
+        directory=FRONTEND_DIR
+    ),
     name="frontend"
 )
 
 
 # =========================================================
-# 5. Request Model
+# Request Model
 # =========================================================
 
 class ChatRequest(BaseModel):
@@ -79,52 +168,7 @@ class ChatRequest(BaseModel):
 
 
 # =========================================================
-# 6. Initialize RAG Pipeline
-# =========================================================
-
-print("Loading documents...")
-
-documents = load_documents()
-
-print(
-    "Number of documents/pages:",
-    len(documents)
-)
-
-
-print("Splitting documents...")
-
-chunks = split_documents(documents)
-
-print(
-    "Number of chunks:",
-    len(chunks)
-)
-
-
-print("Loading / creating vector store...")
-
-vector_store = get_vector_store(chunks)
-
-print("Vector store ready!")
-
-
-print("Creating retriever...")
-
-retriever = create_retriever(vector_store)
-
-print("Retriever ready!")
-
-
-# =========================================================
-# 7. Conversation History
-# =========================================================
-
-history = []
-
-
-# =========================================================
-# 8. Root Endpoint
+# Root Endpoint
 # =========================================================
 
 @app.get("/")
@@ -136,7 +180,7 @@ def root():
 
 
 # =========================================================
-# 9. Frontend Endpoint
+# Frontend Endpoint
 # =========================================================
 
 @app.get("/frontend")
@@ -151,22 +195,31 @@ def frontend():
 
 
 # =========================================================
-# 10. Chat Endpoint
+# Chat Endpoint
 # =========================================================
 
 @app.post("/chat")
 def chat(request: ChatRequest):
 
-    # =====================================================
+    # -----------------------------------------------------
+    # Check Retriever
+    # -----------------------------------------------------
+
+    if retriever is None:
+
+        return {
+            "error": "RAG pipeline is not ready yet."
+        }
+
+    # -----------------------------------------------------
     # STEP 1: Get User Question
-    # =====================================================
+    # -----------------------------------------------------
 
     question = request.question
 
-
-    # =====================================================
+    # -----------------------------------------------------
     # STEP 2: Rewrite Question
-    # =====================================================
+    # -----------------------------------------------------
 
     standalone_question = rewrite_question(
         question,
@@ -179,10 +232,9 @@ def chat(request: ChatRequest):
     print("\nRewritten Question:")
     print(standalone_question)
 
-
-    # =====================================================
+    # -----------------------------------------------------
     # STEP 3: Retrieve Relevant Chunks
-    # =====================================================
+    # -----------------------------------------------------
 
     results = retriever.invoke(
         standalone_question
@@ -193,10 +245,9 @@ def chat(request: ChatRequest):
         len(results)
     )
 
-
-    # =====================================================
+    # -----------------------------------------------------
     # STEP 4: Display Retrieved Chunks
-    # =====================================================
+    # -----------------------------------------------------
 
     for i, doc in enumerate(results):
 
@@ -206,37 +257,35 @@ def chat(request: ChatRequest):
 
         print(doc.page_content)
 
+    # -----------------------------------------------------
+    # STEP 5: Format Context
+    # -----------------------------------------------------
 
-    # =====================================================
-    # STEP 5: Format Retrieved Documents
-    # =====================================================
+    context = format_docs(
+        results
+    )
 
-    context = format_docs(results)
-
-
-    # =====================================================
+    # -----------------------------------------------------
     # STEP 6: Generate Answer
-    # =====================================================
+    # -----------------------------------------------------
 
     answer = generate_answer(
         question,
         context
     )
 
-
-    # =====================================================
-    # STEP 7: Save Conversation History
-    # =====================================================
+    # -----------------------------------------------------
+    # STEP 7: Save Conversation
+    # -----------------------------------------------------
 
     history.append({
         "question": question,
         "answer": answer
     })
 
-
-    # =====================================================
+    # -----------------------------------------------------
     # STEP 8: Return Response
-    # =====================================================
+    # -----------------------------------------------------
 
     return {
         "question": question,
